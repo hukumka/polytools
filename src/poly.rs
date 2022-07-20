@@ -2,6 +2,9 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::ops;
 
+use crate::utils::OrderedPair;
+use crate::utils::ordered_merge;
+
 
 pub trait TermOrdering {
     fn term_cmp(one: &MTerm, other: &MTerm) -> Ordering;
@@ -16,13 +19,13 @@ impl fmt::Debug for VarIdx {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MPoly<TCoeff, TOrder> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MPoly<TCoeff, TOrder=DegRevLexOrder> {
     monoms: Vec<(MTerm, TCoeff)>,
     _order: std::marker::PhantomData<TOrder>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MTerm {
     pub(crate) vars: Vec<(VarIdx, u16)>,
 }
@@ -101,10 +104,70 @@ impl<TCoeff, TOrder> MPoly<TCoeff, TOrder> {
     }
 }
 
+impl<TCoeff, TOrder: TermOrdering> MPoly<TCoeff, TOrder> {
+    pub fn new(mut monoms: Vec<(MTerm, TCoeff)>) -> Self {
+        monoms.sort_by(|l, r| TOrder::term_cmp(&l.0, &r.0).reverse());
+        Self{ monoms, _order: Default::default() }
+    }
+}
+
+impl<'a, TCoeff, TOrder> ops::Add<&'a MPoly<TCoeff, TOrder>> for &'a MPoly<TCoeff, TOrder>
+where
+    TCoeff: Clone,
+    &'a TCoeff: ops::Add<&'a TCoeff, Output=TCoeff>,
+    TOrder: TermOrdering,
+{
+    type Output = MPoly<TCoeff, TOrder>;
+
+    fn add(self, rhs: &'a MPoly<TCoeff, TOrder>) -> Self::Output {
+        let mut monoms = Vec::with_capacity(self.monoms.len() + rhs.monoms.len());
+        ordered_merge(
+            &self.monoms, &rhs.monoms,
+            |l, r| TOrder::term_cmp(&l.0, &r.0).reverse(),
+            |monom| {
+                match monom {
+                    OrderedPair::Left(pair) => { monoms.push(pair.clone()); }
+                    OrderedPair::Right(pair) => { monoms.push(pair.clone()); }
+                    OrderedPair::Both((lterm, lc), (_, rc)) => {
+                        monoms.push((lterm.clone(), lc + rc));
+                    }
+                }
+            },
+        );
+        MPoly { monoms, _order: Default::default() }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_addition() {
+        // 2x + 3y
+        let left: MPoly<i32, DegRevLexOrder> = MPoly::new(vec![
+            (MTerm{vars: vec![(VarIdx(0), 1), ]}, 2),
+            (MTerm{vars: vec![(VarIdx(1), 1), ]}, 3),
+        ]);
+        // x**2 + xy + x - y
+        let right: MPoly<i32, DegRevLexOrder> = MPoly::new(vec![
+            (MTerm{vars: vec![(VarIdx(0), 2), ]}, 1),
+            (MTerm{vars: vec![(VarIdx(1), 1), (VarIdx(0), 1)]}, 1),
+            (MTerm{vars: vec![(VarIdx(0), 1)]}, 1),
+            (MTerm{vars: vec![(VarIdx(1), 1)]}, -1),
+        ]);
+        // x**2 + xy + 3x + 2y
+        let expected: MPoly<i32, DegRevLexOrder> = MPoly::new(vec![
+            (MTerm{vars: vec![(VarIdx(0), 2), ]}, 1),
+            (MTerm{vars: vec![(VarIdx(1), 1), (VarIdx(0), 1)]}, 1),
+            (MTerm{vars: vec![(VarIdx(0), 1)]}, 3),
+            (MTerm{vars: vec![(VarIdx(1), 1)]}, 2),
+        ]);
+
+        let result = &left + &right;
+        assert_eq!(result, expected);
+    }
 
     #[test]
     fn test_lex_ordering() {
